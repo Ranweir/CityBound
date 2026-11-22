@@ -1,0 +1,96 @@
+name: Build Android APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip game and find project
+        id: find
+        run: |
+          # 1) If project.godot is already in the repo root, use it.
+          # 2) Otherwise unzip the .zip files in the repo root and look for project.godot.
+          P=$(find . -maxdepth 1 -name project.godot | head -n1)
+          if [ -z "$P" ]; then
+            n=0
+            for z in ./*.zip ./*.ZIP; do
+              [ -f "$z" ] || continue
+              n=$((n+1))
+              echo "Unzipping: $z"
+              unzip -oq "$z" -d "_unzipped_$n" || true
+              P=$(find "_unzipped_$n" -name project.godot | head -n1)
+              [ -n "$P" ] && break
+            done
+          fi
+          if [ -z "$P" ]; then
+            echo "ERROR: project.godot not found. Upload the game ZIP to the repo root."
+            exit 1
+          fi
+          echo "dir=$(dirname "$P")" >> "$GITHUB_OUTPUT"
+          echo "Project dir: $(dirname "$P")"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Godot 4.3 and export templates
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.3.0
+          use-dotnet: false
+          include-templates: true
+
+      - name: Install Android SDK components
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest"
+
+      - name: Create debug keystore and configure Godot
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+            -keystore "$HOME/debug.keystore" -storepass android \
+            -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          mkdir -p "$HOME/.config/godot"
+          godot --headless --path . --editor --quit || true
+          ls -la "$HOME/.config/godot" || true
+          if ! ls "$HOME"/.config/godot/editor_settings-*.tres > /dev/null 2>&1; then
+            printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$HOME/.config/godot/editor_settings-4.3.tres"
+          fi
+          for f in "$HOME"/.config/godot/editor_settings-*.tres; do
+            {
+              echo "export/android/android_sdk_path = \"$SDK\""
+              echo "export/android/java_sdk_path = \"$JAVA_HOME\""
+              echo "export/android/debug_keystore = \"$HOME/debug.keystore\""
+              echo "export/android/debug_keystore_user = \"androiddebugkey\""
+              echo "export/android/debug_keystore_pass = \"android\""
+              echo "export/android/force_system_user = false"
+              echo "export/android/shutdown_adb_on_exit = true"
+            } >> "$f"
+            echo "Settings updated: $f"
+          done
+
+      - name: Import assets
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: godot --headless --path . --import || true
+
+      - name: Export APK
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" "$PWD/build/CityBound.apk"
+          ls -lh build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CityBound-apk
+          path: ${{ steps.find.outputs.dir }}/build/CityBound.apk
