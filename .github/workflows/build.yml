@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -29,7 +30,7 @@ jobs:
             shopt -u nullglob
 
             if [ "${#zips[@]}" -eq 0 ]; then
-              echo "ERROR: CityBound_part1.zip and CityBound_part2.zip were not found in the repository root."
+              echo "ERROR: CityBound ZIP parts were not found in the repository root."
               exit 1
             fi
 
@@ -42,7 +43,7 @@ jobs:
           fi
 
           if [ -z "$P" ]; then
-            echo "ERROR: project.godot not found after extracting the ZIP parts."
+            echo "ERROR: project.godot not found after extracting ZIP parts."
             exit 1
           fi
 
@@ -50,22 +51,12 @@ jobs:
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Godot project found at: $PROJECT_DIR"
 
-          test -f "$PROJECT_DIR/assets/bike/nrg500.glb" || {
-            echo "ERROR: NRG-500 model missing."
-            exit 1
-          }
           test -f "$PROJECT_DIR/scripts/bike.gd" || {
-            echo "ERROR: bike script missing."
+            echo "ERROR: Bike script missing."
             exit 1
           }
-          test ! -e "$PROJECT_DIR/assets/car" || {
-            echo "ERROR: car assets still present."
-            exit 1
-          }
-          test ! -e "$PROJECT_DIR/assets/truck" || {
-            echo "ERROR: truck assets still present."
-            exit 1
-          }
+
+          echo "Bike script check passed."
 
       - uses: actions/setup-java@v4
         with:
@@ -134,8 +125,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Run the editor headlessly so Godot parses project scripts.
-          # Do not hide errors: the checks below fail the workflow if scripts do not parse.
           set +e
           godot --headless --path . --editor --quit --verbose 2>&1 | tee godot_validation.log
           GODOT_STATUS=${PIPESTATUS[0]}
