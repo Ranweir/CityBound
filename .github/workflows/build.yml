@@ -51,13 +51,12 @@ jobs:
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Godot project found at: $PROJECT_DIR"
 
-          # Check that the truck files are present in the combined project.
-          if [ ! -f "$PROJECT_DIR/assets/truck/kamaz.glb" ]; then
-            echo "WARNING: assets/truck/kamaz.glb is missing."
-          fi
-          if [ ! -f "$PROJECT_DIR/scripts/truck.gd" ]; then
-            echo "WARNING: scripts/truck.gd is missing."
-          fi
+          # Confirm that the motorbike model and script are present.
+          test -f "$PROJECT_DIR/assets/bike/nrg500.glb" || { echo "ERROR: NRG-500 model missing."; exit 1; }
+          test -f "$PROJECT_DIR/scripts/bike.gd" || { echo "ERROR: bike script missing."; exit 1; }
+          # Ensure removed vehicle models are not accidentally included.
+          test ! -e "$PROJECT_DIR/assets/car" || { echo "ERROR: car assets still present."; exit 1; }
+          test ! -e "$PROJECT_DIR/assets/truck" || { echo "ERROR: truck assets still present."; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
