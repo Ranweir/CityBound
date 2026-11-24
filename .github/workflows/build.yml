@@ -8,6 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@v4
 
@@ -17,12 +18,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # If project.godot is already in the repository root, use it.
           P=""
           if [ -f "./project.godot" ]; then
             P="./project.godot"
           else
-            # Both parts contain different files; extract them into ONE directory.
             mkdir -p "_unzipped_game"
 
             shopt -s nullglob
@@ -39,7 +38,7 @@ jobs:
               unzip -oq "$z" -d "_unzipped_game"
             done
 
-            P=$(find "_unzipped_game" -type f -name project.godot -print -quit)
+            P="$(find "_unzipped_game" -type f -name project.godot -print -quit)"
           fi
 
           if [ -z "$P" ]; then
@@ -51,12 +50,22 @@ jobs:
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Godot project found at: $PROJECT_DIR"
 
-          # Confirm that the motorbike model and script are present.
-          test -f "$PROJECT_DIR/assets/bike/nrg500.glb" || { echo "ERROR: NRG-500 model missing."; exit 1; }
-          test -f "$PROJECT_DIR/scripts/bike.gd" || { echo "ERROR: bike script missing."; exit 1; }
-          # Ensure removed vehicle models are not accidentally included.
-          test ! -e "$PROJECT_DIR/assets/car" || { echo "ERROR: car assets still present."; exit 1; }
-          test ! -e "$PROJECT_DIR/assets/truck" || { echo "ERROR: truck assets still present."; exit 1; }
+          test -f "$PROJECT_DIR/assets/bike/nrg500.glb" || {
+            echo "ERROR: NRG-500 model missing."
+            exit 1
+          }
+          test -f "$PROJECT_DIR/scripts/bike.gd" || {
+            echo "ERROR: bike script missing."
+            exit 1
+          }
+          test ! -e "$PROJECT_DIR/assets/car" || {
+            echo "ERROR: car assets still present."
+            exit 1
+          }
+          test ! -e "$PROJECT_DIR/assets/truck" || {
+            echo "ERROR: truck assets still present."
+            exit 1
+          }
 
       - uses: actions/setup-java@v4
         with:
@@ -71,49 +80,91 @@ jobs:
           include-templates: true
 
       - name: Install Android SDK components
+        shell: bash
         run: |
+          set -euo pipefail
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "SDK=$SDK" >> "$GITHUB_ENV"
-          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest"
 
-      - name: Create debug keystore and configure Godot
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "build-tools;34.0.0" \
+            "platforms;android-34" \
+            "cmdline-tools;latest"
+
+      - name: Configure Godot Android export
         working-directory: ${{ steps.find.outputs.dir }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
             -keystore "$HOME/debug.keystore" -storepass android \
-            -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -validity 9999 -deststoretype pkcs12
+
           mkdir -p "$HOME/.config/godot"
-          godot --headless --path . --editor --quit || true
-          ls -la "$HOME/.config/godot" || true
-          if ! ls "$HOME"/.config/godot/editor_settings-*.tres > /dev/null 2>&1; then
-            printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$HOME/.config/godot/editor_settings-4.3.tres"
+          SETTINGS="$HOME/.config/godot/editor_settings-4.3.tres"
+
+          if [ ! -f "$SETTINGS" ]; then
+            printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$SETTINGS"
           fi
-          for f in "$HOME"/.config/godot/editor_settings-*.tres; do
-            {
-              echo "export/android/android_sdk_path = \"$SDK\""
-              echo "export/android/java_sdk_path = \"$JAVA_HOME\""
-              echo "export/android/debug_keystore = \"$HOME/debug.keystore\""
-              echo "export/android/debug_keystore_user = \"androiddebugkey\""
-              echo "export/android/debug_keystore_pass = \"android\""
-              echo "export/android/force_system_user = false"
-              echo "export/android/shutdown_adb_on_exit = true"
-            } >> "$f"
-            echo "Settings updated: $f"
-          done
+
+          {
+            echo 'export/android/android_sdk_path = "'"$SDK"'"'
+            echo 'export/android/java_sdk_path = "'"$JAVA_HOME"'"'
+            echo 'export/android/debug_keystore = "'"$HOME/debug.keystore"'"'
+            echo 'export/android/debug_keystore_user = "androiddebugkey"'
+            echo 'export/android/debug_keystore_pass = "android"'
+            echo 'export/android/force_system_user = false'
+            echo 'export/android/shutdown_adb_on_exit = true'
+          } >> "$SETTINGS"
 
       - name: Import assets
         working-directory: ${{ steps.find.outputs.dir }}
-        run: godot --headless --path . --import
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --import 2>&1 | tee import.log
+
+      - name: Validate GDScript and project before export
+        working-directory: ${{ steps.find.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Run the editor headlessly so Godot parses project scripts.
+          # Do not hide errors: the checks below fail the workflow if scripts do not parse.
+          set +e
+          godot --headless --path . --editor --quit --verbose 2>&1 | tee godot_validation.log
+          GODOT_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$GODOT_STATUS" -ne 0 ]; then
+            echo "ERROR: Godot editor validation exited with status $GODOT_STATUS."
+            exit "$GODOT_STATUS"
+          fi
+
+          if grep -Eiq 'SCRIPT ERROR:|Parse Error:|Failed to load script|Could not parse|Parse failed' godot_validation.log; then
+            echo "ERROR: Godot reported a script/parse error. APK export stopped."
+            exit 1
+          fi
+
+          echo "Godot script validation passed."
 
       - name: Export APK
         working-directory: ${{ steps.find.outputs.dir }}
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p build
           godot --headless --path . --export-debug "Android" "$PWD/build/CityBound.apk"
-          ls -lh build
+          test -s build/CityBound.apk
+          ls -lh build/CityBound.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: CityBound-apk
           path: ${{ steps.find.outputs.dir }}/build/CityBound.apk
+          if-no-files-found: error
