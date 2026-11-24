@@ -11,29 +11,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip game and find project
+      - name: Extract both game ZIP parts and find project
         id: find
+        shell: bash
         run: |
-          # 1) If project.godot is already in the repo root, use it.
-          # 2) Otherwise unzip the .zip files in the repo root and look for project.godot.
-          P=$(find . -maxdepth 1 -name project.godot | head -n1)
-          if [ -z "$P" ]; then
-            n=0
-            for z in ./*.zip ./*.ZIP; do
-              [ -f "$z" ] || continue
-              n=$((n+1))
-              echo "Unzipping: $z"
-              unzip -oq "$z" -d "_unzipped_$n" || true
-              P=$(find "_unzipped_$n" -name project.godot | head -n1)
-              [ -n "$P" ] && break
+          set -euo pipefail
+
+          # If project.godot is already in the repository root, use it.
+          P=""
+          if [ -f "./project.godot" ]; then
+            P="./project.godot"
+          else
+            # Both parts contain different files; extract them into ONE directory.
+            mkdir -p "_unzipped_game"
+
+            shopt -s nullglob
+            zips=(./CityBound_part*.zip ./CityBound_part*.ZIP)
+            shopt -u nullglob
+
+            if [ "${#zips[@]}" -eq 0 ]; then
+              echo "ERROR: CityBound_part1.zip and CityBound_part2.zip were not found in the repository root."
+              exit 1
+            fi
+
+            for z in "${zips[@]}"; do
+              echo "Extracting: $z"
+              unzip -oq "$z" -d "_unzipped_game"
             done
+
+            P=$(find "_unzipped_game" -type f -name project.godot -print -quit)
           fi
+
           if [ -z "$P" ]; then
-            echo "ERROR: project.godot not found. Upload the game ZIP to the repo root."
+            echo "ERROR: project.godot not found after extracting the ZIP parts."
             exit 1
           fi
-          echo "dir=$(dirname "$P")" >> "$GITHUB_OUTPUT"
-          echo "Project dir: $(dirname "$P")"
+
+          PROJECT_DIR="$(dirname "$P")"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Godot project found at: $PROJECT_DIR"
+
+          # Check that the truck files are present in the combined project.
+          if [ ! -f "$PROJECT_DIR/assets/truck/kamaz.glb" ]; then
+            echo "WARNING: assets/truck/kamaz.glb is missing."
+          fi
+          if [ ! -f "$PROJECT_DIR/scripts/truck.gd" ]; then
+            echo "WARNING: scripts/truck.gd is missing."
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -81,7 +105,7 @@ jobs:
 
       - name: Import assets
         working-directory: ${{ steps.find.outputs.dir }}
-        run: godot --headless --path . --import || true
+        run: godot --headless --path . --import
 
       - name: Export APK
         working-directory: ${{ steps.find.outputs.dir }}
